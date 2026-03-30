@@ -4,6 +4,7 @@ from jaxwell import operators, cocg, vecfield
 
 import dataclasses
 from functools import partial
+import jax
 from jax import custom_vjp
 import jax.numpy as np
 from typing import Tuple
@@ -117,6 +118,22 @@ def solve_impl(
     init, iter = cocg.solver(A, b, params.eps)
 
     p, r, x, term_err = init(z, b)
+    init_err = vecfield.norm(r)
+
+    if monitor_fn is _default_monitor_fn:
+        # This branch is transformation-friendly (e.g. vmap) and is used by solve().
+        def cond_fn(state):
+            i, _, _, _, err = state
+            return np.logical_and(i < params.max_iters, err > term_err)
+
+        def body_fn(state):
+            i, p, r, x, _ = state
+            p, r, x, err = iter(p, r, x, z)
+            return i + 1, p, r, x, err
+
+        _, _, _, x, err = jax.lax.while_loop(cond_fn, body_fn, (0, p, r, x, init_err))
+        return vecfield.to_tuple(unpre(x)), [err]
+
     errs = []
     for i in range(params.max_iters):
         p, r, x, err = iter(p, r, x, z)

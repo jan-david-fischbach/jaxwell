@@ -61,6 +61,43 @@ class TestJaxwell(unittest.TestCase):
         x, errs = fdfd.solve_impl(self.z, self.b, adjoint=True, params=self.params)
         self.assertAlmostEqual(errs[0], 0.01358992)
 
+    def test_solve_vmap_and_grad(self):
+        b0 = self.b
+        b1 = tuple(2.0 * component for component in self.b)
+        b_batch = tuple(np.stack((c0, c1), axis=0) for c0, c1 in zip(b0, b1))
+
+        solve_vmapped = jax.vmap(lambda b_i: fdfd.solve(self.params, self.z, b_i))
+
+        x_batch, err_batch = solve_vmapped(b_batch)
+        x0, err0 = fdfd.solve(self.params, self.z, b0)
+        x1, err1 = fdfd.solve(self.params, self.z, b1)
+
+        for xb_i, x0_i, x1_i in zip(x_batch, x0, x1):
+            onp.testing.assert_allclose(xb_i[0], x0_i)
+            onp.testing.assert_allclose(xb_i[1], x1_i)
+
+        self.assertAlmostEqual(err_batch[0], err0)
+        self.assertAlmostEqual(err_batch[1], err1)
+
+        def loss_single(z, b):
+            x, _ = fdfd.solve(self.params, z, b)
+            return vecfield.norm(x)
+
+        def loss_batch(z, b):
+            norms = jax.vmap(lambda b_i: loss_single(z, b_i))(b)
+            return np.sum(norms)
+
+        grad_z_batch, grad_b_batch = jax.grad(loss_batch, (0, 1))(self.z, b_batch)
+        grad_z_0, grad_b_0 = jax.grad(loss_single, (0, 1))(self.z, b0)
+        grad_z_1, grad_b_1 = jax.grad(loss_single, (0, 1))(self.z, b1)
+
+        for gz_b, gz_0, gz_1 in zip(grad_z_batch, grad_z_0, grad_z_1):
+            onp.testing.assert_allclose(gz_b, gz_0 + gz_1)
+
+        for gb_b, gb_0, gb_1 in zip(grad_b_batch, grad_b_0, grad_b_1):
+            onp.testing.assert_allclose(gb_b[0], gb_0)
+            onp.testing.assert_allclose(gb_b[1], gb_1)
+
 
 if __name__ == "__main__":
     unittest.main()
